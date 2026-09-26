@@ -55,7 +55,31 @@ PYTHONPATH=. python scripts/build_indexes.py show_progress=false
 PYTHONPATH=. python scripts/generate_candidates.py show_progress=false
 ```
 
-The current index-builder process selects the first GPU in `gpu_ids` and logs a warning when multiple GPU IDs are configured. Thus, seeing one GPU spike is expected with this implementation. For manual sharding, run separate processes on separate input shards with one GPU per process, distinct `index_dir` values, and merge/search the resulting indexes in a later orchestration layer.
+The index builder now launches one spawned process per configured GPU. Each worker loads its own BGE-M3 model on its assigned GPU, reads the reference files, embeds only its deterministic row shard, and writes indexes under `index_dir/shard-gpu<id>/`. Retrieval automatically discovers every shard and searches all of them before unioning candidates. This avoids duplicating one giant reference embedding matrix in a single GPU process. Each GPU will show activity as its worker processes embedding batches; very small datasets may still finish before utilization graphs show sustained load.
+
+Candidate generation also launches one process per configured GPU. Each process owns a BGE-M3 model, receives a deterministic Source1 row shard, embeds names and addresses for an entire input chunk, and writes a temporary ordinal-keyed shard. The parent merges those shards back into Source1 order. Thus both index building and candidate generation use all configured GPUs:
+
+```bash
+PYTHONPATH=. python scripts/build_indexes.py \
+  backend=sentence_transformers gpu_ids='[0,1]' \
+  chunk_size=8192 embedding_batch_size=64
+
+PYTHONPATH=. python scripts/generate_candidates.py \
+  backend=sentence_transformers gpu_ids='[0,1]' \
+  chunk_size=8192 embedding_batch_size=64
+```
+
+The main speed controls are `chunk_size` and `embedding_batch_size`. Increase them gradually while monitoring GPU memory; if either worker runs out of memory, reduce `embedding_batch_size` first. Runtime depends on GPU model, model download/cache state, FAISS build, country distribution, and disk speed, so validate throughput on a representative sample before committing to a three-hour SLA.
+
+For example, with `gpu_ids='[0,1]'` the output layout is:
+
+```text
+indexes/
+├── shard-gpu0/IN/name.index
+├── shard-gpu0/IN/address.index
+├── shard-gpu1/IN/name.index
+└── shard-gpu1/IN/address.index
+```
 
 For production set `backend` to `sentence_transformers`, install the requirements, ensure BGE-M3 is available, and use `gpu_ids: [0,1]`. `chunk_size` and `embedding_batch_size` are the main memory controls. Reference vectors are embedded once, added incrementally, and persisted by country; candidate output is streamed. Large partitions use IVF-PQ (`nlist`, `pq_m`, `pq_nbits`, `nprobe`); small partitions use exact inner product. Metadata is separate from FAISS and preserves source/entity IDs.
 

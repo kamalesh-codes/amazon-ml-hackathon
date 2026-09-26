@@ -8,6 +8,7 @@ from entity_resolution.preprocessing import normalize_name, normalize_address
 from entity_resolution.country import normalize_country, route_country
 from entity_resolution.indexing import VectorIndex
 from entity_resolution.candidate_generation import evaluate
+from entity_resolution.retrieval import Retriever
 
 def test_reader_chunks_and_missing(tmp_path):
  p=tmp_path/'x.tsv'; p.write_text('entity_id\tbusiness_name\tbusiness_address\tcountry\n1\t café  ltd \t\tIN\n2\t東京\t1-2\t\n',encoding='utf8')
@@ -23,6 +24,14 @@ def test_country_routing():
 
 def test_index_save_load_search(tmp_path):
  ix=VectorIndex(3,exact_threshold=100); ix.add(np.array([[1,0,0],[0,1,0]],dtype='float32'),[{'entity_id':'a'},{'entity_id':'b'}]); ix.save(tmp_path,'name'); loaded=VectorIndex.load(tmp_path,'name'); _, ids=loaded.search(np.array([[.99,.01,0]],dtype='float32'),1); assert loaded.metadata[int(ids[0,0])]['entity_id']=='a'
+
+def test_retrieval_unions_gpu_shards(tmp_path):
+ c=PipelineConfig(index_dir=str(tmp_path),backend='hash',embedding_dim=16,top_k=1)
+ for gpu, entity in [(0,'r0'),(1,'r1')]:
+  for field in ('name','address'):
+   ix=VectorIndex(16,exact_threshold=100); ix.add(np.ones((1,16),dtype='float32'),[{'entity_id':entity}]); ix.save(tmp_path/f'shard-gpu{gpu}'/'IN',field)
+ r=Retriever(str(tmp_path),c); ids=r.retrieve({'entity_id':'q','business_name':'Acme','business_address':'1 Main','country':'IN'})
+ assert set(ids)=={'r0','r1'}
 
 def test_evaluation_metrics(tmp_path):
  cand=tmp_path/'c.tsv'; truth=tmp_path/'g.tsv'; out=tmp_path/'o.json'

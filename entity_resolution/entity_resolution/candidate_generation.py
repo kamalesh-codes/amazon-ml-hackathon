@@ -1,28 +1,116 @@
-import logging, time
+import csv
+import logging
+import multiprocessing as mp
+import time
+from pathlib import Path
+
 from tqdm import tqdm
-from .io import count_rows, iter_rows, write_candidates
+
+from .io import count_rows, iter_rows, read_tsv
 from .retrieval import Retriever
-log=logging.getLogger(__name__)
+
+log = logging.getLogger(__name__)
+
+
+def _candidate_worker(rank, gpu_id, gpu_ids, config_dict, source1_path, temp_dir, total_rows):
+    """Retrieve one deterministic Source1 shard using one embedding worker/GPU."""
+    from .config import PipelineConfig
+    config = PipelineConfig.from_mapping(config_dict)
+    logging.basicConfig(level=config.log_level, format=f"%(asctime)s %(levelname)s [gpu:{gpu_id}] %(message)s")
+    retriever = Retriever(config.index_dir, config, device=(f"cuda:{gpu_id}" if gpu_id is not None else None))
+    Path(temp_dir).mkdir(parents=True, exist_ok=True)
+    shard_path = Path(temp_dir) / f"candidates-gpu{gpu_id}.tsv"
+    expected = (total_rows + len(gpu_ids) - 1 - rank) // len(gpu_ids)
+    progress = tqdm(total=expected, desc=f"GPU {gpu_id} candidate rows", unit="rows", position=rank, disable=not config.show_progress)
+    ordinal = 0
+    done = 0
+    try:
+        with shard_path.open("w", encoding="utf-8", newline="") as out:
+            writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+            for rows in read_tsv(source1_path, chunk_size=config.chunk_size):
+                selected = []
+                selected_ordinals = []
+                for item in rows:
+                    if ordinal % len(gpu_ids) == rank:
+                        selected.append(item)
+                        selected_ordinals.append(ordinal)
+                    ordinal += 1
+                if selected:
+                    batch_ids = retriever.retrieve_batch(selected)
+                    for item_ordinal, item, ids in zip(selected_ordinals, selected, batch_ids):
+                        writer.writerow([item_ordinal, item["entity_id"], ",".join(ids)])
+                    done += len(selected)
+                    progress.update(len(selected))
+    finally:
+        progress.close()
+    return str(shard_path), done
+
 
 def generate_candidates(config):
-    r=Retriever(config.index_dir,config)
-    start=time.time(); done=0
-    with open(config.candidates_path,"w",encoding="utf-8") as f:
-        f.write("entity_id\tcandidate_ids\n")
-        progress=tqdm(total=count_rows(config.source1_path), desc="Generating candidates", unit="rows", disable=not config.show_progress)
-        try:
-            for row in iter_rows(config.source1_path,chunk_size=config.chunk_size):
-                ids=r.retrieve(row); f.write(row["entity_id"]+"\t"+",".join(ids)+"\n"); done+=1
-                progress.update(1)
-                progress.set_postfix(rate=f"{done/max(time.time()-start,1e-9):.1f} rows/s", refresh=False)
-                if done%10000==0: log.info("processed=%d rows/sec=%.1f",done,done/max(time.time()-start,1e-9))
-        finally:
-            progress.close()
+    """Generate candidates with one retrieval process per configured GPU.
 
-def _split(v): return {x for x in (v or "").split(",") if x}
+    Workers write temporary ordinal-keyed shards; the parent merges them in
+    Source1 order, so the final candidates.tsv remains deterministic.
+    """
+    gpu_ids = list(config.gpu_ids) or [None]
+    total_rows = count_rows(config.source1_path)
+    Path(config.temp_dir).mkdir(parents=True, exist_ok=True)
+    config_dict = dict(config.__dict__)
+    ctx = mp.get_context("spawn")
+    processes = []
+    for rank, gpu_id in enumerate(gpu_ids):
+        p = ctx.Process(
+            target=_candidate_worker,
+            args=(rank, gpu_id, gpu_ids, config_dict, config.source1_path, config.temp_dir, total_rows),
+            name=f"candidate-gpu-{gpu_id}",
+        )
+        p.start()
+        processes.append(p)
+    for p in processes:
+        p.join()
+    failed = [(p.name, p.exitcode) for p in processes if p.exitcode != 0]
+    if failed:
+        raise RuntimeError(f"Candidate worker failure(s): {failed}")
+
+    shard_paths = [Path(config.temp_dir) / f"candidates-gpu{gpu_id}.tsv" for gpu_id in gpu_ids]
+    handles = [p.open(encoding="utf-8", newline="") for p in shard_paths]
+    readers = [csv.reader(h, delimiter="\t") for h in handles]
+    current = []
+    try:
+        for rank, reader in enumerate(readers):
+            row = next(reader, None)
+            if row is not None:
+                current.append((int(row[0]), rank, row))
+        current.sort()
+        with open(config.candidates_path, "w", encoding="utf-8", newline="") as out:
+            writer = csv.writer(out, delimiter="\t", lineterminator="\n")
+            writer.writerow(["entity_id", "candidate_ids"])
+            progress = tqdm(total=total_rows, desc="Merging candidates", unit="rows", disable=not config.show_progress)
+            try:
+                while current:
+                    ordinal, rank, row = current.pop(0)
+                    writer.writerow([row[1], row[2]])
+                    progress.update(1)
+                    nxt = next(readers[rank], None)
+                    if nxt is not None:
+                        current.append((int(nxt[0]), rank, nxt))
+                        current.sort()
+            finally:
+                progress.close()
+    finally:
+        for handle in handles:
+            handle.close()
+        for path in shard_paths:
+            path.unlink(missing_ok=True)
+
+
+def _split(v):
+    return {x for x in (v or "").split(",") if x}
+
 
 def evaluate(candidates_path, truth_path, output_path):
-    import csv, json, statistics
+    import json
+    import statistics
     truth={r["source1_entity_id"]:_split(r["matched_entity_ids"]) for r in __import__("entity_resolution.io",fromlist=["iter_rows"]).iter_rows(truth_path,columns=("source1_entity_id","matched_entity_ids"))}
     rows=[]
     with open(candidates_path,encoding="utf-8") as f:
@@ -39,6 +127,7 @@ def evaluate(candidates_path, truth_path, output_path):
          "recall_by_true_match_count":{str(k):statistics.mean(v) for k,v in by_matches.items()}}
     with open(output_path,"w",encoding="utf-8") as f: json.dump(out,f,indent=2)
     return out
+
 
 def _percentile(values,p):
     if not values:return 0
