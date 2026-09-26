@@ -7,8 +7,10 @@ ground_truth_path: data/ground_truth.tsv
 index_dir: indexes
 candidates_path: outputs/candidates.tsv
 evaluation_path: outputs/evaluation.json
-chunk_size: 4096
-embedding_batch_size: 64
+chunk_size: 32768
+embedding_batch_size: 2048
+max_seq_length: 256
+use_fp16: true
 top_k: 50
 model_name: BAAI/bge-m3
 embedding_dim: 1024

@@ -15,9 +15,18 @@ class HashEmbedder:
         norms = np.linalg.norm(out, axis=1, keepdims=True); return out / np.maximum(norms, 1e-12)
 
 class SentenceTransformerEmbedder:
-    def __init__(self, model_name="BAAI/bge-m3", device=None, dim=1024):
+    def __init__(self, model_name="BAAI/bge-m3", device=None, dim=1024, max_seq_length=512, use_fp16=True):
         from sentence_transformers import SentenceTransformer
         self.model = SentenceTransformer(model_name, device=device)
+        self.model.max_seq_length = max_seq_length
+        if use_fp16 and device and str(device).startswith("cuda"):
+            self.model.half()
+            try:
+                import torch
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            except ImportError:
+                pass
         self.dim = dim
     def encode(self, texts, batch_size=64):
         x = self.model.encode(texts, batch_size=batch_size, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False)
@@ -27,4 +36,10 @@ class SentenceTransformerEmbedder:
 
 def make_embedder(config, device=None):
     if config.backend == "hash": return HashEmbedder(config.embedding_dim)
-    return SentenceTransformerEmbedder(config.model_name, device=device, dim=config.embedding_dim)
+    return SentenceTransformerEmbedder(
+        config.model_name,
+        device=device,
+        dim=config.embedding_dim,
+        max_seq_length=config.max_seq_length,
+        use_fp16=config.use_fp16,
+    )

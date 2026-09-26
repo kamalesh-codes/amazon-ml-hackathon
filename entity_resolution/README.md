@@ -62,14 +62,16 @@ Candidate generation also launches one process per configured GPU. Each process 
 ```bash
 PYTHONPATH=. python scripts/build_indexes.py \
   backend=sentence_transformers gpu_ids='[0,1]' \
-  chunk_size=8192 embedding_batch_size=64
+  chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=256 use_fp16=true
 
 PYTHONPATH=. python scripts/generate_candidates.py \
   backend=sentence_transformers gpu_ids='[0,1]' \
-  chunk_size=8192 embedding_batch_size=64
+  chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=256 use_fp16=true
 ```
 
-The main speed controls are `chunk_size` and `embedding_batch_size`. Increase them gradually while monitoring GPU memory; if either worker runs out of memory, reduce `embedding_batch_size` first. Runtime depends on GPU model, model download/cache state, FAISS build, country distribution, and disk speed, so validate throughput on a representative sample before committing to a three-hour SLA.
+The main speed controls are `embedding_batch_size`, `chunk_size`, `max_seq_length`, and `use_fp16`. The aggressive defaults use 2,048 texts per model batch, 32,768 input rows per worker chunk, a 256-token maximum, and fp16 on CUDA. These settings change batching and padding only; BGE-M3, 1024-dimensional vectors, separate name/address embeddings, Top-K, country blocking, and candidate union semantics are unchanged. If a worker runs out of GPU memory, reduce `embedding_batch_size` in this order: 1024, 512, 256. If very long addresses are common, use `max_seq_length=512` to avoid truncating their tail. Runtime depends on GPU model, model download/cache state, FAISS build, country distribution, and disk speed, so benchmark a representative 100K-row sample before committing to a three-hour SLA.
 
 For example, with `gpu_ids='[0,1]'` the output layout is:
 

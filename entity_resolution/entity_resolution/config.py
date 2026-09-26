@@ -11,8 +11,10 @@ class PipelineConfig:
     index_dir: str = "indexes"
     candidates_path: str = "outputs/candidates.tsv"
     evaluation_path: str = "outputs/evaluation.json"
-    chunk_size: int = 4096
-    embedding_batch_size: int = 64
+    chunk_size: int = 32768
+    embedding_batch_size: int = 2048
+    max_seq_length: int = 256
+    use_fp16: bool = True
     top_k: int = 50
     model_name: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
