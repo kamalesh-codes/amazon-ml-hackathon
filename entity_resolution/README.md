@@ -46,6 +46,17 @@ PYTHONPATH=. python scripts/generate_candidates.py --cfg job
 
 Hydra overrides are typed: use `top_k=100` for integers, `fallback_mode=none` for strings, and `gpu_ids='[0,1]'` for lists. The default `config.yaml` uses `backend: hash` so the small pipeline can run offline; production runs should override it with `backend=sentence_transformers` after installing PyTorch, Sentence-Transformers, and a FAISS build.
 
+### Progress bars and GPU visibility
+
+Reference indexing and candidate generation show `tqdm` progress bars with total rows and throughput. They can be disabled for log files or batch schedulers:
+
+```bash
+PYTHONPATH=. python scripts/build_indexes.py show_progress=false
+PYTHONPATH=. python scripts/generate_candidates.py show_progress=false
+```
+
+The current index-builder process selects the first GPU in `gpu_ids` and logs a warning when multiple GPU IDs are configured. Thus, seeing one GPU spike is expected with this implementation. For manual sharding, run separate processes on separate input shards with one GPU per process, distinct `index_dir` values, and merge/search the resulting indexes in a later orchestration layer.
+
 For production set `backend` to `sentence_transformers`, install the requirements, ensure BGE-M3 is available, and use `gpu_ids: [0,1]`. `chunk_size` and `embedding_batch_size` are the main memory controls. Reference vectors are embedded once, added incrementally, and persisted by country; candidate output is streamed. Large partitions use IVF-PQ (`nlist`, `pq_m`, `pq_nbits`, `nprobe`); small partitions use exact inner product. Metadata is separate from FAISS and preserves source/entity IDs.
 
 ## Resource and resilience notes

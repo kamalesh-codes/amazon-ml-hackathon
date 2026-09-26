@@ -27,6 +27,7 @@ class PipelineConfig:
     workers: int = 1
     log_level: str = "INFO"
     backend: str = "sentence_transformers"  # hash is for tests only
+    show_progress: bool = True
 
     @classmethod
     def from_mapping(cls, values):

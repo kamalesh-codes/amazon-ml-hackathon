@@ -23,6 +23,7 @@ temp_dir: tmp
 workers: 1
 log_level: INFO
 backend: hash
+show_progress: true
 
 hydra:
   job:

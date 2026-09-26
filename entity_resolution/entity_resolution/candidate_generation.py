@@ -1,5 +1,6 @@
 import logging, time
-from .io import iter_rows, write_candidates
+from tqdm import tqdm
+from .io import count_rows, iter_rows, write_candidates
 from .retrieval import Retriever
 log=logging.getLogger(__name__)
 
@@ -8,9 +9,15 @@ def generate_candidates(config):
     start=time.time(); done=0
     with open(config.candidates_path,"w",encoding="utf-8") as f:
         f.write("entity_id\tcandidate_ids\n")
-        for row in iter_rows(config.source1_path,chunk_size=config.chunk_size):
-            ids=r.retrieve(row); f.write(row["entity_id"]+"\t"+",".join(ids)+"\n"); done+=1
-            if done%10000==0: log.info("processed=%d rows/sec=%.1f",done,done/max(time.time()-start,1e-9))
+        progress=tqdm(total=count_rows(config.source1_path), desc="Generating candidates", unit="rows", disable=not config.show_progress)
+        try:
+            for row in iter_rows(config.source1_path,chunk_size=config.chunk_size):
+                ids=r.retrieve(row); f.write(row["entity_id"]+"\t"+",".join(ids)+"\n"); done+=1
+                progress.update(1)
+                progress.set_postfix(rate=f"{done/max(time.time()-start,1e-9):.1f} rows/s", refresh=False)
+                if done%10000==0: log.info("processed=%d rows/sec=%.1f",done,done/max(time.time()-start,1e-9))
+        finally:
+            progress.close()
 
 def _split(v): return {x for x in (v or "").split(",") if x}
 
