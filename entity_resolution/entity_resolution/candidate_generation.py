@@ -150,20 +150,26 @@ def evaluate(candidates_path, truth_path, output_path):
         rows = total_candidates = zero = empty_truth = full = 0
         recall_sum = nonempty_recall_sum = 0.0; nonempty_count = 0; max_candidates = 0
         by_matches = {}
-        with open(candidates_path, encoding="utf-8-sig", newline="") as f:
-            for r in csv.DictReader(f, delimiter="\t"):
-                truth_row = db.execute("SELECT matched FROM truth WHERE entity_id=?", (r["entity_id"],)).fetchone()
-                g = _split(truth_row[0]) if truth_row else set()
-                got = _split(r.get("candidate_ids")); candidate_count = len(got); tp = len(g & got)
-                rows += 1; total_candidates += candidate_count; max_candidates = max(max_candidates, candidate_count)
-                zero += candidate_count == 0; empty_truth += not g; full += g <= got
-                recall = tp / len(g) if g else 1.0; recall_sum += recall
-                if g: nonempty_recall_sum += recall; nonempty_count += 1
-                key = len(g); total, matched = by_matches.get(key, (0, 0.0)); by_matches[key] = (total + 1, matched + recall)
-                if len(sample) < sample_limit: sample.append(candidate_count)
-                else:
-                    j = rng.randrange(rows)
-                    if j < sample_limit: sample[j] = candidate_count
+        total_candidate_rows = count_rows(candidates_path, columns=("entity_id", "candidate_ids"))
+        progress = tqdm(total=total_candidate_rows, desc="Evaluating candidates", unit="rows")
+        try:
+            with open(candidates_path, encoding="utf-8-sig", newline="") as f:
+                for r in csv.DictReader(f, delimiter="\t"):
+                    truth_row = db.execute("SELECT matched FROM truth WHERE entity_id=?", (r["entity_id"],)).fetchone()
+                    g = _split(truth_row[0]) if truth_row else set()
+                    got = _split(r.get("candidate_ids")); candidate_count = len(got); tp = len(g & got)
+                    rows += 1; total_candidates += candidate_count; max_candidates = max(max_candidates, candidate_count)
+                    zero += candidate_count == 0; empty_truth += not g; full += g <= got
+                    recall = tp / len(g) if g else 1.0; recall_sum += recall
+                    if g: nonempty_recall_sum += recall; nonempty_count += 1
+                    key = len(g); total, matched = by_matches.get(key, (0, 0.0)); by_matches[key] = (total + 1, matched + recall)
+                    if len(sample) < sample_limit: sample.append(candidate_count)
+                    else:
+                        j = rng.randrange(rows)
+                        if j < sample_limit: sample[j] = candidate_count
+                    progress.update(1)
+        finally:
+            progress.close()
         out={"rows":rows,"mean_candidates":total_candidates/max(rows,1),
              "median_candidates":_percentile(sample,.50),"p90_candidates":_percentile(sample,.90),
              "p95_candidates":_percentile(sample,.95),"p99_candidates":_percentile(sample,.99),"max_candidates":max_candidates,
