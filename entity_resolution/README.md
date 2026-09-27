@@ -92,6 +92,32 @@ PYTHONPATH=. python scripts/evaluate_candidates.py \
   evaluation_path=outputs/evaluation_fast.json
 ```
 
+For the Kaggle training files, use the same `profile=fast`, `backend=sentence_transformers`, and `index_dir` in all three stages. The reference files must be supplied during index building; otherwise Hydra falls back to the local `data/` defaults:
+
+```bash
+DATA=/kaggle/input/datasets/kamaleshcodes/amazon-ml-hackathon/student_resource/dataset/train
+
+PYTHONPATH=. python scripts/build_indexes.py \
+  profile=fast backend=sentence_transformers \
+  source2_path=$DATA/train_source2.tsv \
+  source3_path=$DATA/train_source3.tsv \
+  index_dir=indexes_fast gpu_ids='[0,1]' \
+  chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=128 use_fp16=true
+
+PYTHONPATH=. python scripts/generate_candidates.py \
+  profile=fast backend=sentence_transformers \
+  source1_path=$DATA/train_source1.tsv \
+  index_dir=indexes_fast candidates_path=outputs/candidates.tsv \
+  top_k=50 chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=128 use_fp16=true gpu_ids='[0,1]'
+
+PYTHONPATH=. python scripts/evaluate_candidates.py \
+  candidates_path=outputs/candidates.tsv \
+  ground_truth_path=$DATA/train_ground_truth.tsv \
+  evaluation_path=outputs/evaluation_fast.json
+```
+
 For example, with `gpu_ids='[0,1]'` the output layout is:
 
 ```text
