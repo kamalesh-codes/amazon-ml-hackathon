@@ -53,6 +53,16 @@ def test_evaluation_metrics(tmp_path):
  truth.write_text('source1_entity_id\tmatched_entity_ids\nq1\ta\nq2\t\nq3\ty\n',encoding='utf8')
  m=evaluate(str(cand),str(truth),str(out)); assert m['rows']==3; assert m['full_match_coverage_pct']==pytest.approx(66.66666666666666); assert m['empty_ground_truth_pct']==pytest.approx(33.33333333333333)
 
+def test_evaluation_streams_large_candidate_file(tmp_path):
+ cand=tmp_path/'c.tsv'; truth=tmp_path/'g.tsv'; out=tmp_path/'o.json'
+ with cand.open('w') as f:
+  f.write('entity_id\tcandidate_ids\n')
+  for i in range(20000): f.write(f'q{i}\tr{i},wrong{i}\n')
+ with truth.open('w') as f:
+  f.write('source1_entity_id\tmatched_entity_ids\n')
+  for i in range(20000): f.write(f'q{i}\tr{i}\n')
+ m=evaluate(str(cand),str(truth),str(out)); assert m['rows']==20000; assert m['mean_recall_nonempty_ground_truth']==1.0
+
 def test_small_end_to_end(tmp_path, monkeypatch):
  import subprocess, sys
  data=tmp_path/'data'; data.mkdir()

@@ -138,6 +138,8 @@ This initial implementation intentionally does not include a supervised reranker
 
 Candidate generation now fails fast if no country indexes are found, if the output row count differs from Source1, or if every candidate list is empty. Worker logs show the loaded `index_dir`, country count, and shard count. Evaluation also reports `mean_recall_nonempty_ground_truth`, which avoids confusing the no-match rows with actual retrieval recall.
 
+Evaluation is designed for Kaggle-scale files: it stores the ground-truth lookup in a temporary SQLite file and streams `candidates.tsv` one row at a time. It does not keep all candidate rows, candidate sets, or metric arrays in RAM. Median and percentile candidate counts use a bounded 100,000-row reservoir sample, while row counts, means, recall, and coverage are streaming aggregates. The temporary `.truth.sqlite` file is deleted after evaluation.
+
 ## Train and use the candidate-ranking model
 
 Candidate generation creates a retrieval set; the ranker scores those candidates and cannot recover a true match absent from the candidate TSV. Training requires the candidate TSV, ground truth TSV, Source1 TSV, and the Source2/Source3 reference TSVs because pair features are computed from names, addresses, countries, and candidate rank. The trainer keeps every positive pair and samples up to `--max-negatives` incorrect pairs per Source1 row. This controls the size of the training set while preserving hard, high-ranked negatives.

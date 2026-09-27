@@ -123,27 +123,63 @@ def _split(v):
 
 def evaluate(candidates_path, truth_path, output_path):
     import json
+    import os
+    import sqlite3
     import statistics
-    truth={r["source1_entity_id"]:_split(r["matched_entity_ids"]) for r in __import__("entity_resolution.io",fromlist=["iter_rows"]).iter_rows(truth_path,columns=("source1_entity_id","matched_entity_ids"))}
-    rows=[]
-    with open(candidates_path,encoding="utf-8") as f:
-        for r in csv.DictReader(f,delimiter="\t"):
-            g=truth.get(r["entity_id"],set()); got=_split(r.get("candidate_ids")); tp=len(g&got)
-            rows.append((r["entity_id"],g,got,tp))
-    counts=[len(x[2]) for x in rows]; recalls=[(x[3]/len(x[1]) if x[1] else 1.0) for x in rows]
-    nonempty_recalls=[x[3]/len(x[1]) for x in rows if x[1]]
-    by_matches={}
-    for _,g,_,tp in rows: by_matches.setdefault(len(g),[]).append(tp/len(g) if g else 1.0)
-    out={"rows":len(rows),"mean_candidates":statistics.mean(counts) if counts else 0,"median_candidates":statistics.median(counts) if counts else 0,
-         "p90_candidates":_percentile(counts,.90),"p95_candidates":_percentile(counts,.95),"p99_candidates":_percentile(counts,.99),"max_candidates":max(counts,default=0),
-         "zero_retrieved_pct":100*sum(c==0 for c in counts)/max(len(rows),1),"empty_ground_truth_pct":100*sum(not x[1] for x in rows)/max(len(rows),1),
-         "mean_recall":statistics.mean(recalls) if recalls else 0,
-         "mean_recall_nonempty_ground_truth":statistics.mean(nonempty_recalls) if nonempty_recalls else 0,
-         "nonempty_ground_truth_rows":len(nonempty_recalls),
-         "full_match_coverage_pct":100*sum(x[1]<=x[2] for x in rows)/max(len(rows),1),
-         "recall_by_true_match_count":{str(k):statistics.mean(v) for k,v in by_matches.items()}}
-    with open(output_path,"w",encoding="utf-8") as f: json.dump(out,f,indent=2)
-    return out
+    import random
+    db_path = str(output_path) + ".truth.sqlite"
+    db = sqlite3.connect(db_path)
+    try:
+        db.execute("PRAGMA journal_mode=OFF")
+        db.execute("PRAGMA synchronous=OFF")
+        db.execute("CREATE TABLE truth (entity_id TEXT PRIMARY KEY, matched TEXT NOT NULL)")
+        batch = []
+        for r in __import__("entity_resolution.io", fromlist=["iter_rows"]).iter_rows(
+            truth_path, columns=("source1_entity_id", "matched_entity_ids"), chunk_size=10000
+        ):
+            batch.append((r["source1_entity_id"], r.get("matched_entity_ids") or ""))
+            if len(batch) >= 10000:
+                db.executemany("INSERT OR REPLACE INTO truth VALUES (?, ?)", batch)
+                db.commit(); batch.clear()
+        if batch:
+            db.executemany("INSERT OR REPLACE INTO truth VALUES (?, ?)", batch); db.commit()
+        db.execute("CREATE INDEX truth_id ON truth(entity_id)")
+
+        # Streaming aggregates plus a bounded reservoir for approximate percentiles.
+        rng = random.Random(42); sample = []; sample_limit = 100000
+        rows = total_candidates = zero = empty_truth = full = 0
+        recall_sum = nonempty_recall_sum = 0.0; nonempty_count = 0; max_candidates = 0
+        by_matches = {}
+        with open(candidates_path, encoding="utf-8-sig", newline="") as f:
+            for r in csv.DictReader(f, delimiter="\t"):
+                truth_row = db.execute("SELECT matched FROM truth WHERE entity_id=?", (r["entity_id"],)).fetchone()
+                g = _split(truth_row[0]) if truth_row else set()
+                got = _split(r.get("candidate_ids")); candidate_count = len(got); tp = len(g & got)
+                rows += 1; total_candidates += candidate_count; max_candidates = max(max_candidates, candidate_count)
+                zero += candidate_count == 0; empty_truth += not g; full += g <= got
+                recall = tp / len(g) if g else 1.0; recall_sum += recall
+                if g: nonempty_recall_sum += recall; nonempty_count += 1
+                key = len(g); total, matched = by_matches.get(key, (0, 0.0)); by_matches[key] = (total + 1, matched + recall)
+                if len(sample) < sample_limit: sample.append(candidate_count)
+                else:
+                    j = rng.randrange(rows)
+                    if j < sample_limit: sample[j] = candidate_count
+        out={"rows":rows,"mean_candidates":total_candidates/max(rows,1),
+             "median_candidates":_percentile(sample,.50),"p90_candidates":_percentile(sample,.90),
+             "p95_candidates":_percentile(sample,.95),"p99_candidates":_percentile(sample,.99),"max_candidates":max_candidates,
+             "zero_retrieved_pct":100*zero/max(rows,1),"empty_ground_truth_pct":100*empty_truth/max(rows,1),
+             "mean_recall":recall_sum/max(rows,1),
+             "mean_recall_nonempty_ground_truth":nonempty_recall_sum/max(nonempty_count,1),
+             "nonempty_ground_truth_rows":nonempty_count,
+             "full_match_coverage_pct":100*full/max(rows,1),
+             "recall_by_true_match_count":{str(k): total_recall/count for k,(count,total_recall) in by_matches.items()}}
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path,"w",encoding="utf-8") as f: json.dump(out,f,indent=2)
+        return out
+    finally:
+        db.close()
+        try: os.unlink(db_path)
+        except FileNotFoundError: pass
 
 
 def _percentile(values,p):
