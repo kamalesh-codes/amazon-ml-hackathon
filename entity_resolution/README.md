@@ -73,6 +73,25 @@ PYTHONPATH=. python scripts/generate_candidates.py \
 
 The main speed controls are `embedding_batch_size`, `chunk_size`, `max_seq_length`, and `use_fp16`. The aggressive defaults use 2,048 texts per model batch, 32,768 input rows per worker chunk, a 256-token maximum, and fp16 on CUDA. These settings change batching and padding only; BGE-M3, 1024-dimensional vectors, separate name/address embeddings, Top-K, country blocking, and candidate union semantics are unchanged. If a worker runs out of GPU memory, reduce `embedding_batch_size` in this order: 1024, 512, 256. If very long addresses are common, use `max_seq_length=512` to avoid truncating their tail. Runtime depends on GPU model, model download/cache state, FAISS build, country distribution, and disk speed, so benchmark a representative 100K-row sample before committing to a three-hour SLA.
 
+If the quality-profile run still misses the deadline, use the explicit fast profile. It uses the multilingual 384-dimensional `paraphrase-multilingual-MiniLM-L12-v2` encoder instead of BGE-M3 and one combined `business_name + business_address` embedding pass per row. This changes embeddings and retrieval from separate name/address indexes to a combined index, so build a separate index directory and evaluate it before using the output:
+
+```bash
+PYTHONPATH=. python scripts/build_indexes.py \
+  profile=fast index_dir=indexes_fast gpu_ids='[0,1]' \
+  chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=128 use_fp16=true
+
+PYTHONPATH=. python scripts/generate_candidates.py \
+  profile=fast index_dir=indexes_fast gpu_ids='[0,1]' \
+  chunk_size=32768 embedding_batch_size=2048 \
+  max_seq_length=128 use_fp16=true
+
+PYTHONPATH=. python scripts/evaluate_candidates.py \
+  candidates_path=outputs/candidates.tsv \
+  ground_truth_path=data/ground_truth.tsv \
+  evaluation_path=outputs/evaluation_fast.json
+```
+
 For example, with `gpu_ids='[0,1]'` the output layout is:
 
 ```text

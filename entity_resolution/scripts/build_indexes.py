@@ -17,6 +17,8 @@ from entity_resolution.indexing import VectorIndex
 
 
 def _new_indexes(c):
+    if c.retrieval_mode == "combined":
+        return {"combined": VectorIndex(c.embedding_dim, c.nlist, c.pq_m, c.pq_nbits, c.nprobe, c.exact_threshold)}
     return {
         "name": VectorIndex(c.embedding_dim, c.nlist, c.pq_m, c.pq_nbits, c.nprobe, c.exact_threshold),
         "address": VectorIndex(c.embedding_dim, c.nlist, c.pq_m, c.pq_nbits, c.nprobe, c.exact_threshold),
@@ -61,18 +63,25 @@ def _build_worker(rank, gpu_id, gpu_ids, config_dict, sources, total_rows):
                     groups[row["country"]].append(row)
                 for country, rs in groups.items():
                     indexes.setdefault(country, _new_indexes(c))
+                if c.retrieval_mode == "combined":
+                    vectors = emb.encode(
+                        [f"{r['business_name_norm']} [SEP] {r['business_address_norm']}" for r in selected],
+                        c.embedding_batch_size,
+                    )
+                else:
+                    names = emb.encode([r["business_name_norm"] for r in selected], c.embedding_batch_size)
+                    addresses = emb.encode([r["business_address_norm"] for r in selected], c.embedding_batch_size)
                 # Encode the whole selected chunk per field. Calling the model once
                 # per country creates tiny GPU batches and is the main throughput trap.
-                names = emb.encode([r["business_name_norm"] for r in selected], c.embedding_batch_size)
-                addresses = emb.encode([r["business_address_norm"] for r in selected], c.embedding_batch_size)
                 for country, rs in groups.items():
                     # Rows in each country group retain their order from selected.
-                    positions = [i for i, r in enumerate(selected) if r["country"] == country]
-                    name_vec = names[positions]
-                    address_vec = addresses[positions]
                     meta = [{"entity_id": r["entity_id"], "source": source, "country": country} for r in rs]
-                    indexes[country]["name"].add(name_vec, meta)
-                    indexes[country]["address"].add(address_vec, meta)
+                    positions = [i for i, r in enumerate(selected) if r["country"] == country]
+                    if c.retrieval_mode == "combined":
+                        indexes[country]["combined"].add(vectors[positions], meta)
+                    else:
+                        indexes[country]["name"].add(names[positions], meta)
+                        indexes[country]["address"].add(addresses[positions], meta)
                 progress.update(len(selected))
     finally:
         progress.close()
@@ -80,9 +89,9 @@ def _build_worker(rank, gpu_id, gpu_ids, config_dict, sources, total_rows):
     shard_dir = Path(c.index_dir) / f"shard-gpu{gpu_id}"
     for country, ix in indexes.items():
         out = shard_dir / country
-        ix["name"].save(out, "name")
-        ix["address"].save(out, "address")
-    logging.info("Completed worker rank=%d: countries=%d, rows=%d", rank, len(indexes), sum(len(ix["name"].metadata) for ix in indexes.values()))
+        for field, vector_index in ix.items():
+            vector_index.save(out, field)
+    logging.info("Completed worker rank=%d: countries=%d, rows=%d", rank, len(indexes), sum(len(next(iter(ix.values())).metadata) for ix in indexes.values()))
 
 
 @hydra.main(version_base=None, config_path="../config", config_name="config")

@@ -4,6 +4,8 @@ import json
 
 @dataclass
 class PipelineConfig:
+    profile: str = "quality"  # quality | fast
+    retrieval_mode: str = "separate"  # separate | combined
     source1_path: str = "data/source1.tsv"
     source2_path: str = "data/source2.tsv"
     source3_path: str = "data/source3.tsv"
@@ -30,6 +32,18 @@ class PipelineConfig:
     log_level: str = "INFO"
     backend: str = "sentence_transformers"  # hash is for tests only
     show_progress: bool = True
+
+    def __post_init__(self):
+        if self.profile == "fast":
+            # Multilingual 384-d model: faster and lower memory than BGE-M3.
+            if self.model_name == "BAAI/bge-m3":
+                self.model_name = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            if self.embedding_dim == 1024:
+                self.embedding_dim = 384
+            if self.max_seq_length == 256:
+                self.max_seq_length = 128
+            if self.retrieval_mode == "separate":
+                self.retrieval_mode = "combined"
 
     @classmethod
     def from_mapping(cls, values):

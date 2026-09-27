@@ -1,5 +1,6 @@
 # Hydra config. Override any value at runtime, for example:
 # python scripts/generate_candidates.py embedding_batch_size=16 top_k=100
+profile: quality
 source1_path: data/source1.tsv
 source2_path: data/source2.tsv
 source3_path: data/source3.tsv
