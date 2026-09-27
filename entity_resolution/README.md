@@ -137,3 +137,61 @@ The implementation never loads a complete TSV into a DataFrame and never materia
 This initial implementation intentionally does not include a supervised reranker. Ground-truth evaluation reports mean/median/p90/p95/p99/max candidate count, zero-retrieval rate, empty-ground-truth rate, mean recall, full-match coverage, and recall by true-match count.
 
 Candidate generation now fails fast if no country indexes are found, if the output row count differs from Source1, or if every candidate list is empty. Worker logs show the loaded `index_dir`, country count, and shard count. Evaluation also reports `mean_recall_nonempty_ground_truth`, which avoids confusing the no-match rows with actual retrieval recall.
+
+## Train and use the candidate-ranking model
+
+Candidate generation creates a retrieval set; the ranker scores those candidates and cannot recover a true match absent from the candidate TSV. Training requires the candidate TSV, ground truth TSV, Source1 TSV, and the Source2/Source3 reference TSVs because pair features are computed from names, addresses, countries, and candidate rank. The trainer keeps every positive pair and samples up to `--max-negatives` incorrect pairs per Source1 row. This controls the size of the training set while preserving hard, high-ranked negatives.
+
+Install the model dependency:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Train on CPU:
+
+```bash
+PYTHONPATH=. python scripts/train_ranker.py \
+  --candidates outputs/candidates.tsv \
+  --ground-truth /path/to/train_ground_truth.tsv \
+  --source1 /path/to/train_source1.tsv \
+  --reference /path/to/train_source2.tsv /path/to/train_source3.tsv \
+  --model-out outputs/candidate_ranker.cbm \
+  --max-negatives 20 --iterations 500
+```
+
+Train with both Kaggle GPUs using CatBoost:
+
+```bash
+PYTHONPATH=. python scripts/train_ranker.py \
+  --candidates outputs/candidates.tsv \
+  --ground-truth $DATA/train_ground_truth.tsv \
+  --source1 $DATA/train_source1.tsv \
+  --reference $DATA/train_source2.tsv $DATA/train_source3.tsv \
+  --model-out outputs/candidate_ranker.cbm \
+  --max-negatives 20 --iterations 500 \
+  --task-type GPU --devices 0:1
+```
+
+Use the saved model to produce a reranked candidate file:
+
+```bash
+PYTHONPATH=. python scripts/predict_ranker.py \
+  --candidates outputs/candidates.tsv \
+  --source1 $DATA/train_source1.tsv \
+  --reference $DATA/train_source2.tsv $DATA/train_source3.tsv \
+  --model outputs/candidate_ranker.cbm \
+  --output outputs/candidates_reranked.tsv \
+  --top-k 50
+```
+
+Evaluate the reranked output with the existing evaluator:
+
+```bash
+PYTHONPATH=. python scripts/evaluate_candidates.py \
+  candidates_path=outputs/candidates_reranked.tsv \
+  ground_truth_path=$DATA/train_ground_truth.tsv \
+  evaluation_path=outputs/evaluation_reranked.json
+```
+
+The saved `.cbm` model is accompanied by `.cbm.json` metadata containing feature names and training-pair counts. Use `--threshold 0.5` (or calibrate another threshold on validation data) only when variable candidate-list lengths are preferred; without a threshold, prediction returns the top `--top-k` candidates for every Source1 row.

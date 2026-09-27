@@ -8,3 +8,5 @@ sentence-transformers>=3.0.0
 torch>=2.0.0
 # Optional resource logging:
 psutil>=5.9
+# Candidate ranking model; supports CPU and multi-GPU training.
+catboost>=1.2

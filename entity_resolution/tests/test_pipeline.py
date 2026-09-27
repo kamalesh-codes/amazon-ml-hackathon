@@ -9,6 +9,7 @@ from entity_resolution.country import normalize_country, route_country
 from entity_resolution.indexing import VectorIndex
 from entity_resolution.candidate_generation import evaluate
 from entity_resolution.retrieval import Retriever
+from entity_resolution.ranker import pair_features, make_training_data
 
 def test_reader_chunks_and_missing(tmp_path):
  p=tmp_path/'x.tsv'; p.write_text('entity_id\tbusiness_name\tbusiness_address\tcountry\n1\t café  ltd \t\tIN\n2\t東京\t1-2\t\n',encoding='utf8')
@@ -35,6 +36,16 @@ def test_retrieval_unions_gpu_shards(tmp_path):
 
 def test_retriever_rejects_missing_indexes(tmp_path):
  with pytest.raises(FileNotFoundError): Retriever(str(tmp_path), PipelineConfig(backend='hash', embedding_dim=16))
+
+def test_ranker_features_and_negative_sampling(tmp_path):
+ cand=tmp_path/'c.tsv'; truth=tmp_path/'g.tsv'
+ cand.write_text('entity_id\tcandidate_ids\nq1\tr1,r2,r3\n',encoding='utf8')
+ truth.write_text('source1_entity_id\tmatched_entity_ids\nq1\tr1\n',encoding='utf8')
+ q={'q1':{'entity_id':'q1','business_name':'Acme Ltd','business_address':'1 Main','country':'IN'}}
+ refs={f'r{i}':{'entity_id':f'r{i}','business_name':('Acme Ltd' if i==1 else 'Other'),'business_address':'1 Main','country':'IN'} for i in range(1,4)}
+ x,y,groups=make_training_data(str(cand),q,refs,{'q1':{'r1'}},max_negatives=1)
+ assert x.shape[1]==13 and groups==[2] and list(y)==[1,0]
+ assert pair_features(q['q1'],refs['r1'],1)[1]==1.0
 
 def test_evaluation_metrics(tmp_path):
  cand=tmp_path/'c.tsv'; truth=tmp_path/'g.tsv'; out=tmp_path/'o.json'
