@@ -28,6 +28,11 @@ class Retriever:
                     {"name": VectorIndex.load(country_dir, "name"), "address": VectorIndex.load(country_dir, "address")}
                 )
         self.countries = sorted(self.indexes)
+        self.shard_count = sum(len(v) for v in self.indexes.values())
+        if not self.countries:
+            raise FileNotFoundError(
+                f"No country indexes found under {index_dir}. Build indexes first and use the same index_dir."
+            )
 
     def retrieve_batch(self, rows):
         """Embed and search a whole query batch, vectorizing FAISS calls too."""

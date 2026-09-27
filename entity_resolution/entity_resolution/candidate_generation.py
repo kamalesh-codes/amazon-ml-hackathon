@@ -18,6 +18,7 @@ def _candidate_worker(rank, gpu_id, gpu_ids, config_dict, source1_path, temp_dir
     config = PipelineConfig.from_mapping(config_dict)
     logging.basicConfig(level=config.log_level, format=f"%(asctime)s %(levelname)s [gpu:{gpu_id}] %(message)s")
     retriever = Retriever(config.index_dir, config, device=(f"cuda:{gpu_id}" if gpu_id is not None else None))
+    logging.info("Loaded index_dir=%s countries=%d shards=%d", config.index_dir, len(retriever.countries), retriever.shard_count)
     Path(temp_dir).mkdir(parents=True, exist_ok=True)
     shard_path = Path(temp_dir) / f"candidates-gpu{gpu_id}.tsv"
     expected = (total_rows + len(gpu_ids) - 1 - rank) // len(gpu_ids)
@@ -76,6 +77,8 @@ def generate_candidates(config):
     handles = [p.open(encoding="utf-8", newline="") for p in shard_paths]
     readers = [csv.reader(h, delimiter="\t") for h in handles]
     current = []
+    written = 0
+    nonempty = 0
     try:
         for rank, reader in enumerate(readers):
             row = next(reader, None)
@@ -91,6 +94,8 @@ def generate_candidates(config):
                     ordinal, rank, row = current.pop(0)
                     writer.writerow([row[1], row[2]])
                     progress.update(1)
+                    written += 1
+                    nonempty += bool(row[2])
                     nxt = next(readers[rank], None)
                     if nxt is not None:
                         current.append((int(nxt[0]), rank, nxt))
@@ -102,6 +107,14 @@ def generate_candidates(config):
             handle.close()
         for path in shard_paths:
             path.unlink(missing_ok=True)
+    if written != total_rows:
+        raise RuntimeError(f"Candidate output row count mismatch: wrote {written}, expected {total_rows}")
+    if total_rows and nonempty == 0:
+        raise RuntimeError(
+            "All generated candidate lists are empty. Check index_dir, country values, "
+            "and that reference indexes were built successfully."
+        )
+    log.info("Candidate generation complete: rows=%d nonempty=%d (%.2f%%)", written, nonempty, 100 * nonempty / max(written, 1))
 
 
 def _split(v):
@@ -118,12 +131,16 @@ def evaluate(candidates_path, truth_path, output_path):
             g=truth.get(r["entity_id"],set()); got=_split(r.get("candidate_ids")); tp=len(g&got)
             rows.append((r["entity_id"],g,got,tp))
     counts=[len(x[2]) for x in rows]; recalls=[(x[3]/len(x[1]) if x[1] else 1.0) for x in rows]
+    nonempty_recalls=[x[3]/len(x[1]) for x in rows if x[1]]
     by_matches={}
     for _,g,_,tp in rows: by_matches.setdefault(len(g),[]).append(tp/len(g) if g else 1.0)
     out={"rows":len(rows),"mean_candidates":statistics.mean(counts) if counts else 0,"median_candidates":statistics.median(counts) if counts else 0,
          "p90_candidates":_percentile(counts,.90),"p95_candidates":_percentile(counts,.95),"p99_candidates":_percentile(counts,.99),"max_candidates":max(counts,default=0),
          "zero_retrieved_pct":100*sum(c==0 for c in counts)/max(len(rows),1),"empty_ground_truth_pct":100*sum(not x[1] for x in rows)/max(len(rows),1),
-         "mean_recall":statistics.mean(recalls) if recalls else 0,"full_match_coverage_pct":100*sum(x[1]<=x[2] for x in rows)/max(len(rows),1),
+         "mean_recall":statistics.mean(recalls) if recalls else 0,
+         "mean_recall_nonempty_ground_truth":statistics.mean(nonempty_recalls) if nonempty_recalls else 0,
+         "nonempty_ground_truth_rows":len(nonempty_recalls),
+         "full_match_coverage_pct":100*sum(x[1]<=x[2] for x in rows)/max(len(rows),1),
          "recall_by_true_match_count":{str(k):statistics.mean(v) for k,v in by_matches.items()}}
     with open(output_path,"w",encoding="utf-8") as f: json.dump(out,f,indent=2)
     return out

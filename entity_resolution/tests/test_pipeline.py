@@ -33,6 +33,9 @@ def test_retrieval_unions_gpu_shards(tmp_path):
  r=Retriever(str(tmp_path),c); ids=r.retrieve({'entity_id':'q','business_name':'Acme','business_address':'1 Main','country':'IN'})
  assert set(ids)=={'r0','r1'}
 
+def test_retriever_rejects_missing_indexes(tmp_path):
+ with pytest.raises(FileNotFoundError): Retriever(str(tmp_path), PipelineConfig(backend='hash', embedding_dim=16))
+
 def test_evaluation_metrics(tmp_path):
  cand=tmp_path/'c.tsv'; truth=tmp_path/'g.tsv'; out=tmp_path/'o.json'
  cand.write_text('entity_id\tcandidate_ids\nq1\ta,b\nq2\t\nq3\tx\n',encoding='utf8')

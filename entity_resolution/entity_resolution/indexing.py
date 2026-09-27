@@ -41,6 +41,9 @@ class VectorIndex:
     @classmethod
     def load(cls,directory,field):
         d=Path(directory); cfg=json.loads((d/f"{field}.config.json").read_text()); obj=cls(cfg["dim"])
-        if faiss is not None and (d/f"{field}.index").exists(): obj.index=faiss.read_index(str(d/f"{field}.index")); obj.index.nprobe=getattr(obj.index,"nprobe",32)
+        if faiss is not None and (d/f"{field}.index").exists():
+            obj.index=faiss.read_index(str(d/f"{field}.index"))
+            if hasattr(obj.index,"nprobe"):
+                obj.index.nprobe=32
         else: obj.index=np.load(d/f"{field}.npy")
         obj.metadata=load_metadata(d/f"{field}.metadata.jsonl"); return obj
